@@ -1,5 +1,6 @@
 # HS80-Waybar
 A small python script to display the battery level of the Corsair HS80 Gaming headset in Waybar, made with Claude Code.
+![HS80-Battery-Icon-Waybar](waybar-hs80-battery.png)
 
 # Setup
 Copy the `hs80-battery.py' into a folder of your choosing, I used '.config/waybar/scripts'.
