@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "ripped-kanga.hs80-battery",
+  "name": "HS80 Battery",
+  "version": "2.0.0",
+  "author": "Ripped-Kanga",
+  "license": "MIT",
+  "description": "Battery level for the Corsair HS80 RGB Wireless headset, read directly over hidraw.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "HS80 Battery",
+    "description": "Corsair HS80 headset battery level",
+    "category": "Hardware",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
