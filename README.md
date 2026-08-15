@@ -1,4 +1,4 @@
-# HS80-Waybar
+# hs80-battery
 Battery level for the Corsair HS80 RGB Wireless headset in your status bar, made with Claude Code.
 
 Works two ways:
@@ -24,7 +24,7 @@ sudo udevadm trigger
 Install and enable straight from this repo:
 
 ```
-omarchy plugin add https://github.com/Ripped-Kanga/HS80-Waybar --enable
+omarchy plugin add https://github.com/Ripped-Kanga/hs80-battery --enable
 ```
 
 The widget lands in the right section of the bar, showing a battery glyph and percentage. It dims when the headset is powered off, shifts toward the theme's urgent colour when the battery is low (≤30%), and goes fully urgent when critical (≤15%). Colours follow your Omarchy theme automatically.
