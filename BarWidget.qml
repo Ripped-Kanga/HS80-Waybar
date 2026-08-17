@@ -49,7 +49,7 @@ BarWidget {
   }
 
   visible: connected || reconnecting || !hideWhenDisconnected
-  implicitWidth: button.implicitWidth
+  implicitWidth: layout.implicitWidth
   implicitHeight: button.implicitHeight
 
   IpcHandler {
@@ -116,19 +116,41 @@ BarWidget {
     onTriggered: micProc.running = true
   }
 
-  WidgetButton {
-    id: button
-    anchors.fill: parent
-    bar: root.bar
-    text: (root.micMuted ? "\u{f036d} " : "") + root.icon() + " " + (root.connected
-      ? Math.round(root.percent) + "%"
-      : (root.reconnecting ? "…" : "--"))
-    foreground: root.levelColor()
-    tooltipText: (root.micMuted ? "Mic muted • " : "") + (root.connected
-      ? "Corsair HS80 Battery: " + Math.round(root.percent) + "%"
-      : (root.reconnecting
-        ? "Corsair HS80: reconnecting…"
-        : "Corsair HS80: not connected"))
-    onPressed: root.refresh()
+  Row {
+    id: layout
+    anchors.left: parent.left
+    anchors.top: parent.top
+    height: parent.height
+
+    // Mic-mute glyph, rendered separately so it can be a couple px larger than
+    // the battery text. Only shown once a mute event has been observed.
+    Text {
+      id: micGlyph
+      visible: root.micMuted
+      height: layout.height
+      verticalAlignment: Text.AlignVCenter
+      text: "\u{f036d}"  // 󰍭 mdi-microphone-off
+      color: root.levelColor()
+      font.family: button.fontFamily
+      font.pixelSize: button.fontSize + 2
+      renderType: Text.NativeRendering
+      leftPadding: 6
+      rightPadding: 0
+    }
+
+    WidgetButton {
+      id: button
+      bar: root.bar
+      text: root.icon() + " " + (root.connected
+        ? Math.round(root.percent) + "%"
+        : (root.reconnecting ? "…" : "--"))
+      foreground: root.levelColor()
+      tooltipText: (root.micMuted ? "Mic muted • " : "") + (root.connected
+        ? "Corsair HS80 Battery: " + Math.round(root.percent) + "%"
+        : (root.reconnecting
+          ? "Corsair HS80: reconnecting…"
+          : "Corsair HS80: not connected"))
+      onPressed: root.refresh()
+    }
   }
 }
