@@ -29,6 +29,8 @@ omarchy plugin add https://github.com/Ripped-Kanga/hs80-battery --enable
 
 The widget lands in the right section of the bar, showing a battery glyph and percentage. It dims when the headset is powered off, shows `…` while the dongle is re-establishing the link, shifts toward the theme's urgent colour when the battery is low (≤30%), and goes fully urgent when critical (≤15%). Colours follow your Omarchy theme automatically.
 
+A **mic-muted glyph** () appears in front of the battery when you flip the mic boom up to mute, and disappears when you flip it down. This is tracked live by a small read-only listener (`bin/hs80-mic-listen`) that watches the headset's mic-mute notifications without ever writing to the device. Note: the mute state is only known after the first flip since the headset powered on, so the glyph won't show until you've muted at least once.
+
 - **Left click** the widget to refresh immediately.
 - **Move it**: `omarchy bar move ripped-kanga.hs80-battery --section center`
 - **Refresh from a script**: `omarchy-shell ripped-kanga.hs80-battery refresh`

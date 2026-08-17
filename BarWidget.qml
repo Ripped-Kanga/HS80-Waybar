@@ -21,6 +21,8 @@ BarWidget {
   property string linkState: "disconnected"
   readonly property bool connected: linkState === "connected" && percent >= 0
   readonly property bool reconnecting: linkState === "reconnecting"
+  // Mic-mute, tracked live by a read-only listener on vendor report 0x03.
+  property bool micMuted: false
 
   readonly property color fg: bar ? bar.barForeground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -87,19 +89,46 @@ BarWidget {
     onTriggered: root.refresh()
   }
 
+  // Persistent read-only listener for mic-mute state (never writes to the
+  // device, so it cannot disturb the battery/vendor channel). Emits one JSON
+  // line per state change: {"muted": true|false}.
+  Process {
+    id: micProc
+    command: [root.pluginDir + "bin/hs80-mic-listen"]
+    running: true
+    stdout: SplitParser {
+      onRead: (line) => {
+        try {
+          root.micMuted = JSON.parse(line).muted === true
+        } catch (e) {
+          // ignore malformed lines
+        }
+      }
+    }
+    onExited: micRestart.restart()
+  }
+
+  // If the listener ever exits (it self-heals internally, so this is rare),
+  // bring it back after a short delay rather than tight-looping.
+  Timer {
+    id: micRestart
+    interval: 3000
+    onTriggered: micProc.running = true
+  }
+
   WidgetButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.icon() + " " + (root.connected
+    text: (root.micMuted ? "\u{f036d} " : "") + root.icon() + " " + (root.connected
       ? Math.round(root.percent) + "%"
       : (root.reconnecting ? "…" : "--"))
     foreground: root.levelColor()
-    tooltipText: root.connected
+    tooltipText: (root.micMuted ? "Mic muted • " : "") + (root.connected
       ? "Corsair HS80 Battery: " + Math.round(root.percent) + "%"
       : (root.reconnecting
         ? "Corsair HS80: reconnecting…"
-        : "Corsair HS80: not connected")
+        : "Corsair HS80: not connected"))
     onPressed: root.refresh()
   }
 }

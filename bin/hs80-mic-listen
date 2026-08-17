@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Read-only mic-mute listener for the Corsair HS80 RGB Wireless headset.
+
+The headset reports its mic-mute state on vendor report 0x03 (see PROTOCOL.md):
+
+    03 01 01 a6 00 <state>      state: 0x01 = muted (boom up), 0x00 = unmuted
+
+This is a push notification sent on each flip, carrying the *current* state. This
+listener opens the control node O_RDONLY and NEVER writes to the device, so —
+unlike the battery/vendor property reads — it cannot disturb the dongle's
+telemetry channel.
+
+It prints one JSON line to stdout on each state change:
+
+    {"muted": true}
+    {"muted": false}
+
+and is meant to run persistently (the bar widget streams it line by line). It
+self-heals across dongle unplug/replug. On disconnect it emits {"muted": false}
+so a stale "muted" indicator clears.
+"""
+
+import json
+import os
+import select
+import time
+
+VENDOR_ID = 0x1B1C
+PRODUCT_ID = 0x0A6B
+MIC_REPORT_ID = 0x03      # byte[0]: vendor input channel carrying mic-mute
+MIC_EVENT = 0xA6          # byte[3]: signature of a mic status frame
+STATE_BYTE = 5            # byte[5]: 0x01 = muted, 0x00 = unmuted
+RETRY_S = 2.0
+
+
+def find_control_node():
+    """The 267-byte control interface (carries report 0x03)."""
+    base = "/sys/class/hidraw"
+    if not os.path.isdir(base):
+        return None
+    for entry in sorted(os.listdir(base)):
+        dev = os.path.join(base, entry, "device")
+        try:
+            ue = open(os.path.join(dev, "uevent")).read().upper()
+        except OSError:
+            continue
+        if f"{VENDOR_ID:08X}" in ue and f"{PRODUCT_ID:08X}" in ue:
+            try:
+                sz = os.path.getsize(os.path.join(dev, "report_descriptor"))
+            except OSError:
+                sz = 0
+            if sz > 200:
+                return f"/dev/{entry}"
+    return None
+
+
+def emit(muted):
+    print(json.dumps({"muted": muted}), flush=True)
+
+
+def main():
+    last = None
+    while True:
+        path = find_control_node()
+        if not path:
+            time.sleep(RETRY_S)
+            continue
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            time.sleep(RETRY_S)
+            continue
+        try:
+            while True:
+                r, _, _ = select.select([fd], [], [], 5.0)
+                if not r:
+                    continue
+                data = os.read(fd, 64)  # raises OSError when the dongle leaves
+                if (len(data) > STATE_BYTE
+                        and data[0] == MIC_REPORT_ID
+                        and data[3] == MIC_EVENT):
+                    muted = bool(data[STATE_BYTE])
+                    if muted != last:
+                        last = muted
+                        emit(muted)
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        # dongle went away: clear any stale muted indicator and re-find
+        if last is not False:
+            last = False
+            emit(False)
+        time.sleep(RETRY_S)
+
+
+if __name__ == "__main__":
+    main()

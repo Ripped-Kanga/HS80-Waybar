@@ -34,11 +34,11 @@ Kernel input mapping (`/proc/bus/input/devices`):
 |---|---|---|---|
 | `0x21` | In/Out | Generic Desktop / Keyboard | Keyboard input + LED output (13-byte array) |
 | `0x11` | In/Out | Generic Desktop / Keyboard | Extended keyboard (104 + 8 byte arrays) |
-| `0x0e` | In | Consumer | Discrete controls — usages `0xe9`/`0xea` (volume up/down) and `0xe2` (mute). This is the **volume wheel + mic-mute button**, readable with no vendor protocol. |
+| `0x0e` | In | Consumer | **Volume wheel** — usages `0xe9`/`0xea` (vol up/down) fire as momentary presses (`data=0x01`/`0x02`, then `0x00`). The declared mute bit `0xe2` is **not** used for the mic (mic-mute lives on report `0x03`; see below). Verified 2026-08-17. |
 | `0x0f` | In | Consumer | 16-bit consumer usage code (logical 0–0x3ff). **Note the collision:** consumer *report* `0x0f` is unrelated to vendor *property* `0x0f` (battery). |
 | `0x01` | In | Vendor `0xFF42` usage 1 | 63-byte vendor input (command replies + notifications) |
 | `0x02` | Out | Vendor `0xFF42` usage 1 | 63-byte vendor output (commands) |
-| `0x03` | In | Vendor `0xFF42` usage 2 | 63-byte vendor input — **second input channel, unexplored** |
+| `0x03` | In | Vendor `0xFF42` usage 2 | **Mic-mute status notifications** — verified 2026-08-17 (see below). Pushed on each mic-boom flip, carrying current state. |
 | `0x58` | In/Out | Vendor `0xFF58` usage 1 | 63-byte vendor in **and** out — **second bidirectional channel, unexplored. Do not write to it blind.** |
 
 ### hidraw5 report map (from the 87-byte descriptor)
@@ -130,12 +130,40 @@ Every other property id is **unknown** — the enumeration sweep did not complet
 For a starting list of candidate BRAGI property ids, consult the OpenRGB and
 ckb-next Bragi controller sources rather than trusting an unverified table here.
 
+## Mic-mute (report `0x03`) — verified 2026-08-17
+
+Flipping the mic boom pushes a notification on **report `0x03`** (the FF42 usage-2
+input channel). It is a **stateful push** — the frame carries the *current* mute
+state, sent on each flip:
+
+```
+03 01 01 a6 00 <state>
+│  │  │  │  │  └─ 0x01 = muted (boom up), 0x00 = unmuted (boom down)
+│  │  │  │  └─ 00
+│  │  │  └─ a6  (status-notification event id)
+│  │  └─ 01
+│  └─ 01
+└─ report id 0x03
+```
+
+Because it is **read-only and push-based**, a listener on this report tracks mute
+state without ever writing to the device — so it is completely safe, unlike the
+battery/vendor property reads. `bin/hs80-mic-listen` does exactly this and the
+bar widget streams it. **Limitation:** the state is only known after the first
+flip since power-on — the device does not volunteer it at connect, and reading
+it on demand would mean a vendor write we won't risk. The widget therefore shows
+the mic-mute glyph only once a mute event is observed (unknown ≡ not shown).
+
+Note: the event id `0xa6` also appeared in wedged battery dumps, so it is a
+**general "status changed" notification id**, not specifically "reconnecting" —
+disambiguate by report id and payload (report `0x03` + this layout = mic-mute).
+
 ## What we still can't do from software alone
 
-- **Consumer report `0x0e`** (volume/mute) and **`0x22`** (dial/buttons) only
-  emit on physical interaction. Capturing them needs someone at the keyboard —
-  see `tools/hs80-listen.py`.
-- Vendor channels **`0x03`** and **`0x58`** are completely unexplored.
+- The **dial** (report `0x22` on hidraw5) and the raw volume-wheel bytes are
+  captured only on physical interaction — see `tools/hs80-listen.py` /
+  `tools/hs80-capture-controls.py`.
+- Vendor channel **`0x58`** (FF58, in+out) is completely unexplored.
 
 ## Tools
 
@@ -145,10 +173,12 @@ ckb-next Bragi controller sources rather than trusting an unverified table here.
   it against a headset you're using; the vendor channel is too fragile for
   routine probing without the iCUE handshake described above.
 - `tools/hs80-listen.py` — **write-free** passive reader for the consumer
-  (`0x0e`) and mouse/dial (`0x22`) reports. This is the *safe* tool — it never
-  writes to the device, so it cannot wedge anything. Run it, then work the volume
-  wheel / mic-mute / dial to map the byte layout. This is the recommended next
-  expansion (e.g. a mic-mute indicator).
+  (`0x0e`) / keyboard / mouse-dial (`0x22`) reports. Never writes, so it cannot
+  wedge anything.
+- `tools/hs80-capture-controls.py` — **write-free** timed capture that decodes
+  control frames (used to reverse the mic-mute / volume reports above).
+- `bin/hs80-mic-listen` — **write-free** persistent mic-mute listener (report
+  `0x03`); the bar widget streams it for the mic-mute indicator.
 
 ## A warning (why the sweep is unfinished)
 
