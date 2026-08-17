@@ -97,6 +97,15 @@ Returns per-property metadata (a type or width code). Useful for decoding value
 widths correctly instead of guessing offsets — but confirm what byte 3 means by
 comparing several properties before relying on it.
 
+Confirmed type codes (byte 3 of the `0x08` reply): property `0x0f` (battery) →
+`0x03`; property `0x10` (status) → `0x04`. Observed (2026-08-17): while the
+telemetry was **wedged** (see below), metadata reads (`0x08`) still answered
+while value reads (`0x09`) returned nothing — so `0x08` is served from the
+dongle's static cache and does not prove the headset is reachable. Do **not**
+read this as a "headset asleep" signal: in the observed case the headset was on
+and playing audio the whole time; the value reads failed because probing had
+wedged the telemetry, not because the headset was off.
+
 ### Opcodes that produced no reply
 `0x02` and `0x0a` returned nothing. **`0x0a` was in the command sequence
 immediately before the dongle reset — treat it as suspect and do not send it.**
@@ -106,12 +115,20 @@ immediately before the dongle reset — treat it as suspect and do not send it.*
 | Property | Meaning | Value encoding | Status |
 |---|---|---|---|
 | `0x0f` | Battery level | 16-bit LE deci-percent (÷10) | **Verified** (43.0%) |
-| `0x10` | Battery / connection status | — | Seen as the event id in dump frames when the headset is off (prior work); value semantics **not captured** |
+| `0x10` | Battery / connection status | — | Type code `0x04` (from `0x08`); a status/charge field. Value semantics **not decoded** — see note below |
+
+Charge/status decode is a **dead end via active probing**: reading `0x10` in the
+two live states needed to isolate the charging bit reliably wedges the telemetry
+(observed twice). The realistic path is an **iCUE USB capture on Windows** — iCUE
+reads and writes these properties routinely, and a capture would reveal the real
+command sequence *including whatever session/subscription handshake the dongle
+expects first*. That missing init step is the likely reason bare property reads
+destabilise the channel, and it's the prerequisite for any read/write of status,
+sidetone, EQ, sleep-timeout, or RGB.
 
 Every other property id is **unknown** — the enumeration sweep did not complete.
-For a starting list of candidate BRAGI property ids (firmware version, sidetone,
-sleep timeout, EQ, etc.), consult the OpenRGB and ckb-next Bragi controller
-sources rather than trusting an unverified table here.
+For a starting list of candidate BRAGI property ids, consult the OpenRGB and
+ckb-next Bragi controller sources rather than trusting an unverified table here.
 
 ## What we still can't do from software alone
 
@@ -122,24 +139,33 @@ sources rather than trusting an unverified table here.
 
 ## Tools
 
-- `tools/hs80-probe.py` — safe, paced GET_PROPERTY / metadata sweep (ops
-  `0x08`/`0x09` only, `0x50` property cap, aborts on the first I/O error or link
-  drop). **Untested since the reset** — run it knowing it once preceded a device
-  reset; if the vendor channel goes silent, stop and power-cycle.
-- `tools/hs80-listen.py` — passive reader for the consumer (`0x0e`) and
-  mouse/dial (`0x22`) reports; run it, then work the volume wheel / mic-mute /
-  dial to map the byte layout.
+- `tools/hs80-probe.py` — paced GET_PROPERTY / metadata sweep (ops `0x08`/`0x09`
+  only, `0x50` cap, aborts on error). **⚠️ Even this wedges the battery telemetry
+  in practice** (it recovers on its own in minutes, audio unaffected). Do not run
+  it against a headset you're using; the vendor channel is too fragile for
+  routine probing without the iCUE handshake described above.
+- `tools/hs80-listen.py` — **write-free** passive reader for the consumer
+  (`0x0e`) and mouse/dial (`0x22`) reports. This is the *safe* tool — it never
+  writes to the device, so it cannot wedge anything. Run it, then work the volume
+  wheel / mic-mute / dial to map the byte layout. This is the recommended next
+  expansion (e.g. a mic-mute indicator).
 
 ## A warning (why the sweep is unfinished)
 
-During this session an active property sweep on the `0x02` vendor channel caused
-the **dongle to reset (USB re-enumeration) and the headset wireless link to
-drop.** The exact trigger is not confirmed — candidates are the unknown opcode
-`0x0a`, out-of-range property ids (`0xfe`/`0xff`), or sending commands with no
-delay between them. The dongle stays enumerated after such a reset, but the HS80
-powers itself off when the link drops and **must be turned back on with the
-physical power button** (replug the dongle if the vendor channel is still
-silent afterwards). Software cannot restore the link.
+During this session, active probing on the `0x02` vendor channel repeatedly
+**wedged the battery telemetry** — the dongle stops answering property/battery
+reads and emits reconnect events (`0xa6`) instead. The first, most aggressive
+sweep also triggered a one-off **USB re-enumeration** of the dongle; later,
+gentler probing wedged the telemetry *without* any re-enumeration. Throughout
+all of it, **audio, the RF link, and the headset's own battery LED kept working
+normally** — only the host-side battery *reporting* breaks. (An earlier draft of
+this doc claimed the wireless link dropped and the headset needed its power
+button; that was wrong — the link never dropped.)
+
+The exact trigger is not confirmed — candidates are the unknown opcode `0x0a`,
+out-of-range property ids (`0xfe`/`0xff`), or command pacing — and it recurred
+even with paced, in-range, read-only commands, so **treat the whole channel as
+too fragile to probe on a headset you're using.**
 
 This vendor endpoint shares a channel with handle/flash commands. **Never sweep
 raw opcodes on report `0x02`.** Enumerate with `0x08`/`0x09` only, pace commands
@@ -178,6 +204,17 @@ dongle LED is the pairing indicator: solid white = connected/normal, rapid blink
 The remaining fault is narrow: **battery telemetry over the HID channel is not
 being reported to the host** (dump emits event `0xa6`, property reads the
 unavailable sentinel), while audio, the RF link, and the headset's own battery
-LED are all fine. Likely recovery: charge the headset (no-regret; unsticks a
-confused gauge), a longer full headset power-off, or — if the dongle LED shows a
-pairing fault — an iCUE re-pair on a Windows machine.
+LED are all fine.
+
+**Recovery (observed twice):** the wedge **self-heals within a few minutes** on
+its own — the headset pushes its next battery update and telemetry repopulates.
+No physical intervention was needed or helped: the cold dongle replug did
+nothing, and power-cycling the headset did nothing (both incidents recovered on
+their own timeline regardless). The reliable trigger for a fresh report, if you
+don't want to wait, is a genuine **charge-state change** (plug in / unplug the
+charge cable), which forces the headset to send an updated status.
+
+**This means active probing of property `0x10` is a dead end for decoding charge
+status:** every attempt to read it reliably wedges the very telemetry being
+measured. The realistic path to the status/charge encoding is an iCUE USB
+capture on Windows (see below), not more probing here.
