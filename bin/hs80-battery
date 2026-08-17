@@ -5,21 +5,49 @@ Talks to the wireless dongle directly over hidraw, so it needs no
 third-party Python packages. Prints one JSON object on stdout that is
 consumed by both the Omarchy shell bar widget and Waybar:
 
-  {"text": "... 94%", "tooltip": "...", "class": "normal", "percentage": 94}
+  {"text": "... 94%", "tooltip": "...", "class": "normal",
+   "percentage": 94, "state": "connected"}
 
-`percentage` is omitted when the headset is powered off or out of range.
+The `state` field is one of:
+  - "connected"    battery is being reported (`percentage` present)
+  - "reconnecting" dongle is re-establishing the link / resyncing telemetry;
+                   battery not available yet (no `percentage`)
+  - "disconnected" headset is off, out of range, or the dongle is unplugged
+
+Protocol (Corsair BRAGI; see PROTOCOL.md): commands go out on report 0x02,
+replies come back on report 0x01. Battery is property 0x0f, read with
+GET_PROPERTY (opcode 0x09) as a 16-bit little-endian deci-percent value. The
+legacy dump command (02 01 00) is used only to classify the link state, via the
+event id it echoes: 0x0f = battery present, 0x10 = off/out-of-range,
+0xa6 = reconnecting.
 """
 
 import json
 import os
 import select
+import time
 
 VENDOR_ID = 0x1B1C
 PRODUCT_ID = 0x0A6B
-BATTERY_CMD = [0x02, 0x01, 0x00]
-BATTERY_EVENT = 0x0F
+
+REPORT_OUT = 0x02              # vendor output report id
+OP_GET_PROPERTY = 0x09         # GET_PROPERTY: 02 09 <prop_lo> <prop_hi>
+OP_DUMP = 0x01                 # legacy snapshot/dump: 02 01 00
+PROP_BATTERY = 0x0F
+
+GET_REPLY_MARKER = 0x01        # byte[1] of a GET_PROPERTY reply
+DUMP_REPLY_MARKER = 0xF1       # byte[1] of a dump/notification reply
+EVENT_BATTERY = 0x0F           # dump event id: battery level present
+EVENT_STATUS = 0x10            # dump event id: connection/charge status
+EVENT_RECONNECTING = 0xA6      # dump event id: link re-establishing
+
 READ_TIMEOUT_S = 0.5
-MAX_READS = 5
+MAX_READS = 6
+CMD_GAP_S = 0.05
+# GET_PROPERTY battery replies below this (deci-percent) are the "unavailable"
+# sentinel the dongle returns while telemetry is resyncing, not a real charge
+# (a headset that is on and streaming is never at ~0.0%). Reject and reclassify.
+MIN_VALID_DECIPERCENT = 2
 
 
 def find_hidraw_paths():
@@ -50,32 +78,87 @@ def find_hidraw_paths():
     return paths
 
 
-def get_battery():
-    """Query each matching hidraw node until one answers with a battery event."""
+def _send(fd, payload):
+    os.write(fd, bytes([REPORT_OUT] + payload + [0] * (63 - len(payload))))
+
+
+def _read_reply(fd, marker, ident):
+    """Return the first reply frame whose byte[1]==marker and byte[2]==ident,
+    reading a few frames to skip unrelated events. None on timeout/error."""
+    for _ in range(MAX_READS):
+        readable, _, _ = select.select([fd], [], [], READ_TIMEOUT_S)
+        if not readable:
+            break
+        try:
+            data = os.read(fd, 64)
+        except OSError:
+            break
+        if len(data) >= 7 and data[1] == marker and data[2] == ident:
+            return data
+    return None
+
+
+def read_battery_deci(fd):
+    """Clean single-property read. Returns deci-percent int, or None."""
+    _send(fd, [OP_GET_PROPERTY, PROP_BATTERY, 0x00])
+    reply = _read_reply(fd, GET_REPLY_MARKER, PROP_BATTERY)
+    if reply is None:
+        return None
+    return reply[5] | (reply[6] << 8)
+
+
+def read_dump_event(fd):
+    """Send the legacy dump and return the event id it echoes (byte[3]), or
+    None. Used only to classify the link state."""
+    _send(fd, [OP_DUMP, 0x00])
+    for _ in range(MAX_READS):
+        readable, _, _ = select.select([fd], [], [], READ_TIMEOUT_S)
+        if not readable:
+            break
+        try:
+            data = os.read(fd, 64)
+        except OSError:
+            break
+        if len(data) >= 7 and data[1] == DUMP_REPLY_MARKER:
+            return data[3]
+    return None
+
+
+def assess():
+    """Return (state, percent). state in {connected, reconnecting, disconnected};
+    percent is a float only when connected."""
     for path in find_hidraw_paths():
         try:
             fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
         except OSError:
             continue
         try:
-            os.write(fd, bytes(BATTERY_CMD + [0] * 62))
-            # The dongle may emit other events (e.g. connection status)
-            # before the battery response, so read a few times.
-            for _ in range(MAX_READS):
-                readable, _, _ = select.select([fd], [], [], READ_TIMEOUT_S)
-                if not readable:
-                    break
-                data = os.read(fd, 65)
-                if len(data) > 6 and data[3] == BATTERY_EVENT:
-                    pct = (data[5] | (data[6] << 8)) / 10
-                    if 0 <= pct <= 100:
-                        return pct
+            deci = read_battery_deci(fd)
+            if deci is not None and deci >= MIN_VALID_DECIPERCENT:
+                pct = deci / 10
+                if 0 < pct <= 100:
+                    return "connected", pct
+
+            # No clean battery value — classify the link state from the dump.
+            time.sleep(CMD_GAP_S)
+            event = read_dump_event(fd)
+            if event == EVENT_BATTERY:
+                # Battery showed up on the dump path after all.
+                deci = read_battery_deci(fd)
+                if deci is not None and deci >= MIN_VALID_DECIPERCENT:
+                    return "connected", deci / 10
+            if event == EVENT_RECONNECTING:
+                return "reconnecting", None
+            # EVENT_STATUS / None / anything else on a responding node: the
+            # headset is off or out of range.
+            if event is not None:
+                return "disconnected", None
         except OSError:
             continue
         finally:
             os.close(fd)
 
-    return None
+    return "disconnected", None
 
 
 def get_icon(pct):
@@ -98,22 +181,34 @@ def get_css_class(pct):
     return "normal"
 
 
-def main():
-    pct = get_battery()
+HEADSET_ICON = "\U000f02ce"  # 󰋎
 
-    if pct is not None:
+
+def main():
+    state, pct = assess()
+
+    if state == "connected":
         icon = get_icon(pct)
         output = {
             "text": f"{icon} {pct:.0f}%",
             "tooltip": f"Corsair HS80 Battery: {pct:.0f}%",
             "class": get_css_class(pct),
             "percentage": round(pct),
+            "state": "connected",
+        }
+    elif state == "reconnecting":
+        output = {
+            "text": f"{HEADSET_ICON} …",
+            "tooltip": "Corsair HS80: reconnecting…",
+            "class": "reconnecting",
+            "state": "reconnecting",
         }
     else:
         output = {
-            "text": "\U000f02ce --",  # 󰋎
+            "text": f"{HEADSET_ICON} --",
             "tooltip": "Corsair HS80: not connected",
             "class": "unavailable",
+            "state": "disconnected",
         }
 
     print(json.dumps(output))

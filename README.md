@@ -27,7 +27,7 @@ Install and enable straight from this repo:
 omarchy plugin add https://github.com/Ripped-Kanga/hs80-battery --enable
 ```
 
-The widget lands in the right section of the bar, showing a battery glyph and percentage. It dims when the headset is powered off, shifts toward the theme's urgent colour when the battery is low (≤30%), and goes fully urgent when critical (≤15%). Colours follow your Omarchy theme automatically.
+The widget lands in the right section of the bar, showing a battery glyph and percentage. It dims when the headset is powered off, shows `…` while the dongle is re-establishing the link, shifts toward the theme's urgent colour when the battery is low (≤30%), and goes fully urgent when critical (≤15%). Colours follow your Omarchy theme automatically.
 
 - **Left click** the widget to refresh immediately.
 - **Move it**: `omarchy bar move ripped-kanga.hs80-battery --section center`
@@ -88,6 +88,9 @@ In your Waybar style.css, add this or style to your preference.
 #custom-hs80_battery_headset.critical {
     color: #f38ba8;
 }
+#custom-hs80_battery_headset.reconnecting {
+    color: #89b4fa;
+}
 #custom-hs80_battery_headset.unavailable {
     color: #585b70;
 }
@@ -96,3 +99,13 @@ In your Waybar style.css, add this or style to your preference.
 Reload Waybar.
 
 > `hs80-battery.py` is the original script and still works, but it needs the `python-hid` package. `bin/hs80-battery` is a drop-in replacement with no dependencies.
+
+# Protocol notes & tools
+
+The dongle's HID protocol (Corsair's BRAGI vendor channel) is documented in [`PROTOCOL.md`](PROTOCOL.md): the command framing, the `GET_PROPERTY` read used for battery, the full report map for both interfaces, and the surfaces not yet explored (mic-mute/volume, the dial, and two unmapped vendor channels).
+
+Two read-mostly helpers live in `tools/`:
+- `hs80-probe.py` — a safe, paced, read-only sweep of the vendor properties.
+- `hs80-listen.py` — a passive listener for the physical controls (volume wheel, mic-mute, dial).
+
+> ⚠️ Do not send arbitrary commands to the `0x02` vendor channel. Aggressive probing once reset the dongle and briefly wedged its battery telemetry (audio was unaffected). See the warning in `PROTOCOL.md`.

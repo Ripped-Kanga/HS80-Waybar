@@ -17,7 +17,10 @@ BarWidget {
 
   // -1 while the headset is powered off or out of range.
   property real percent: -1
-  readonly property bool connected: percent >= 0
+  // "connected" | "reconnecting" | "disconnected"
+  property string linkState: "disconnected"
+  readonly property bool connected: linkState === "connected" && percent >= 0
+  readonly property bool reconnecting: linkState === "reconnecting"
 
   readonly property color fg: bar ? bar.barForeground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -32,6 +35,7 @@ BarWidget {
   }
 
   function levelColor() {
+    if (reconnecting) return Qt.darker(fg, 1.25)
     if (!connected) return Qt.darker(fg, 1.55)
     if (percent <= 15) return urgent
     if (percent <= 30) return Qt.tint(fg, Qt.alpha(urgent, 0.55))
@@ -42,7 +46,7 @@ BarWidget {
     if (!proc.running) proc.running = true
   }
 
-  visible: connected || !hideWhenDisconnected
+  visible: connected || reconnecting || !hideWhenDisconnected
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -64,8 +68,12 @@ BarWidget {
           var status = JSON.parse(text)
           var pct = Number(status.percentage)
           root.percent = isFinite(pct) ? pct : -1
+          // Fall back to inferring state from percentage for older poller output.
+          root.linkState = status.state
+            || (isFinite(pct) ? "connected" : "disconnected")
         } catch (e) {
           root.percent = -1
+          root.linkState = "disconnected"
         }
       }
     }
@@ -83,11 +91,15 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.icon() + " " + (root.connected ? Math.round(root.percent) + "%" : "--")
+    text: root.icon() + " " + (root.connected
+      ? Math.round(root.percent) + "%"
+      : (root.reconnecting ? "…" : "--"))
     foreground: root.levelColor()
     tooltipText: root.connected
       ? "Corsair HS80 Battery: " + Math.round(root.percent) + "%"
-      : "Corsair HS80: not connected"
+      : (root.reconnecting
+        ? "Corsair HS80: reconnecting…"
+        : "Corsair HS80: not connected")
     onPressed: root.refresh()
   }
 }
